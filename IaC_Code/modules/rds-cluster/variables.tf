@@ -87,3 +87,15 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "serverlessv2_min_capacity" {
+  description = "Minimum Aurora Serverless v2 capacity in ACUs"
+  type        = number
+  default     = 0.5
+}
+
+variable "serverlessv2_max_capacity" {
+  description = "Maximum Aurora Serverless v2 capacity in ACUs"
+  type        = number
+  default     = 2
+}

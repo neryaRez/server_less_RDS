@@ -12,4 +12,6 @@ locals {
     },
     var.tags
   )
+  db_port = var.engine == "aurora-mysql" ? 3306 : 5432
+  final_snapshot_identifier = "${local.name_prefix}-final-snapshot"
 }
