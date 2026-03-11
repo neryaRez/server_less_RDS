@@ -7,7 +7,7 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
-  
+
   db_port = var.engine == "aurora-mysql" ? 3306 : 5432
-  
+
 }

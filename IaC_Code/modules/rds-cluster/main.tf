@@ -46,9 +46,9 @@ resource "aws_rds_cluster" "db_cluster" {
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
 
-  backup_retention_period = var.backup_retention_period
-  deletion_protection     = var.deletion_protection
-  skip_final_snapshot     = var.environment == "prod" ? false : true
+  backup_retention_period   = var.backup_retention_period
+  deletion_protection       = var.deletion_protection
+  skip_final_snapshot       = var.environment == "prod" ? false : true
   final_snapshot_identifier = var.environment == "prod" ? local.final_snapshot_identifier : null
   serverlessv2_scaling_configuration {
     min_capacity = var.serverlessv2_min_capacity

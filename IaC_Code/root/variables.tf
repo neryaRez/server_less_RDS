@@ -7,13 +7,13 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name"
   type        = string
-  default = "Aurora_serverless_Project"
+  default     = "aurora_serverless_project"
 }
 
 variable "environment" {
   description = "Environment name"
   type        = string
-  
+
   validation {
     condition     = contains(["dev", "prod"], var.environment)
     error_message = "environment must be one of: dev, prod."
@@ -28,7 +28,7 @@ variable "db_name" {
 variable "master_username" {
   description = "Master username"
   type        = string
-  default = "admin"
+  default     = "admin"
 }
 
 variable "engine" {
@@ -63,7 +63,7 @@ variable "backup_retention_period" {
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
-  default = "10.0.0.0/16"
+  default     = "10.0.0.0/16"
 }
 
 variable "private_subnet_a_cidr" {
