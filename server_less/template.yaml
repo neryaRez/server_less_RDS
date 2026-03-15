@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless automation for on-demand Aurora RDS cluster provisioning
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aurora-serverless-project
+
+  EnvironmentName:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub organization or username
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name where Terraform code will be committed
+
+  GitHubBaseBranch:
+    Type: String
+    Default: main
+    Description: Base branch for pull requests
+
+  GitHubTokenParameterName:
+    Type: String
+    Default: /aurora-serverless/github/token
+    Description: SSM SecureString parameter name containing GitHub token
+
+  TerraformRootPath:
+    Type: String
+    Default: IaC_Code/root
+    Description: Path in repository where Terraform root configuration exists
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        PROJECT_NAME: !Ref ProjectName
+        ENVIRONMENT_NAME: !Ref EnvironmentName
+        GITHUB_OWNER: !Ref GitHubOwner
+        GITHUB_REPO: !Ref GitHubRepo
+        GITHUB_BASE_BRANCH: !Ref GitHubBaseBranch
+        GITHUB_TOKEN_PARAMETER_NAME: !Ref GitHubTokenParameterName
+        TERRAFORM_ROOT_PATH: !Ref TerraformRootPath
+        LOG_LEVEL: INFO
+
+Resources:
+  RequestsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${EnvironmentName}-requests-topic'
+
+  RequestsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-queue'
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RequestsDLQ.Arn
+        maxReceiveCount: 3
+
+  RequestsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-dlq'
+      MessageRetentionPeriod: 1209600
+
+  RequestsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref RequestsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSNSToSendMessage
+            Effect: Allow
+            Principal: "*"
+            Action: sqs:SendMessage
+            Resource: !GetAtt RequestsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref RequestsTopic
+
+  RequestsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref RequestsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt RequestsQueue.Arn
+      RawMessageDelivery: true
+
+  ApiGatewayPublishRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-apigw-sns-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PublishToSns
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref RequestsTopic
+
+  ProcessRequestsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${EnvironmentName}-process-requests'
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Description: Consumes SQS messages and creates GitHub PRs with Terraform changes
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSXRayDaemonWriteAccess
+        - Statement:
+            - Sid: ReadGitHubTokenFromSSM
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GitHubTokenParameterName}'
+      Events:
+        RequestQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RequestsQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  ServerlessApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-api'
+      StageName: !Ref EnvironmentName
+      TracingEnabled: true
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          title: !Sub '${ProjectName}-${EnvironmentName}-request-api'
+          version: '1.0'
+        schemes:
+          - https
+        paths:
+          /requests:
+            post:
+              consumes:
+                - application/json
+              produces:
+                - application/json
+              responses:
+                '200':
+                  description: Request accepted
+                  schema:
+                    type: object
+              x-amazon-apigateway-request-validator: body-only
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: POST
+                credentials: !GetAtt ApiGatewayPublishRole.Arn
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:sns:path//'
+                passthroughBehavior: never
+                requestParameters:
+                  integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+                requestTemplates:
+                  application/json: !Sub |
+                    Action=Publish&TopicArn=$util.urlEncode('${RequestsTopic}')&Message=$util.urlEncode($input.body)
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseTemplates:
+                      application/json: |
+                        {
+                          "message": "Request accepted for asynchronous processing"
+                        }
+        x-amazon-apigateway-request-validators:
+          body-only:
+            validateRequestBody: true
+            validateRequestParameters: false
+
+Outputs:
+  ApiUrl:
+    Description: API endpoint for submitting RDS provisioning requests
+    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/requests'
+
+  RequestsTopicArn:
+    Description: SNS topic ARN for incoming provisioning requests
+    Value: !Ref RequestsTopic
+
+  RequestsQueueArn:
+    Description: SQS queue ARN consumed by Lambda
+    Value: !GetAtt RequestsQueue.Arn
+
+  ProcessRequestsFunctionArn:
+    Description: Lambda function ARN that processes requests
+    Value: !GetAtt ProcessRequestsFunction.Arn

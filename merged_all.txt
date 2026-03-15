@@ -1,6 +1,219 @@
 
 --- START: server_less/template.yaml ---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless automation for on-demand Aurora RDS cluster provisioning
 
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aurora-serverless-project
+
+  EnvironmentName:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub organization or username
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name where Terraform code will be committed
+
+  GitHubBaseBranch:
+    Type: String
+    Default: main
+    Description: Base branch for pull requests
+
+  GitHubTokenParameterName:
+    Type: String
+    Default: /aurora-serverless/github/token
+    Description: SSM SecureString parameter name containing GitHub token
+
+  TerraformRootPath:
+    Type: String
+    Default: IaC_Code/root
+    Description: Path in repository where Terraform root configuration exists
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        PROJECT_NAME: !Ref ProjectName
+        ENVIRONMENT_NAME: !Ref EnvironmentName
+        GITHUB_OWNER: !Ref GitHubOwner
+        GITHUB_REPO: !Ref GitHubRepo
+        GITHUB_BASE_BRANCH: !Ref GitHubBaseBranch
+        GITHUB_TOKEN_PARAMETER_NAME: !Ref GitHubTokenParameterName
+        TERRAFORM_ROOT_PATH: !Ref TerraformRootPath
+        LOG_LEVEL: INFO
+
+Resources:
+  RequestsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${EnvironmentName}-requests-topic'
+
+  RequestsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-queue'
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RequestsDLQ.Arn
+        maxReceiveCount: 3
+
+  RequestsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-dlq'
+      MessageRetentionPeriod: 1209600
+
+  RequestsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref RequestsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSNSToSendMessage
+            Effect: Allow
+            Principal: "*"
+            Action: sqs:SendMessage
+            Resource: !GetAtt RequestsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref RequestsTopic
+
+  RequestsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref RequestsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt RequestsQueue.Arn
+      RawMessageDelivery: true
+
+  ApiGatewayPublishRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-apigw-sns-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PublishToSns
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref RequestsTopic
+
+  ProcessRequestsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${EnvironmentName}-process-requests'
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Description: Consumes SQS messages and creates GitHub PRs with Terraform changes
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSXRayDaemonWriteAccess
+        - Statement:
+            - Sid: ReadGitHubTokenFromSSM
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GitHubTokenParameterName}'
+      Events:
+        RequestQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RequestsQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  ServerlessApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-api'
+      StageName: !Ref EnvironmentName
+      TracingEnabled: true
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          title: !Sub '${ProjectName}-${EnvironmentName}-request-api'
+          version: '1.0'
+        schemes:
+          - https
+        paths:
+          /requests:
+            post:
+              consumes:
+                - application/json
+              produces:
+                - application/json
+              responses:
+                '200':
+                  description: Request accepted
+                  schema:
+                    type: object
+              x-amazon-apigateway-request-validator: body-only
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: POST
+                credentials: !GetAtt ApiGatewayPublishRole.Arn
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:sns:path//'
+                passthroughBehavior: never
+                requestParameters:
+                  integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+                requestTemplates:
+                  application/json: !Sub |
+                    Action=Publish&TopicArn=$util.urlEncode('${RequestsTopic}')&Message=$util.urlEncode($input.body)
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseTemplates:
+                      application/json: |
+                        {
+                          "message": "Request accepted for asynchronous processing"
+                        }
+        x-amazon-apigateway-request-validators:
+          body-only:
+            validateRequestBody: true
+            validateRequestParameters: false
+
+Outputs:
+  ApiUrl:
+    Description: API endpoint for submitting RDS provisioning requests
+    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/requests'
+
+  RequestsTopicArn:
+    Description: SNS topic ARN for incoming provisioning requests
+    Value: !Ref RequestsTopic
+
+  RequestsQueueArn:
+    Description: SQS queue ARN consumed by Lambda
+    Value: !GetAtt RequestsQueue.Arn
+
+  ProcessRequestsFunctionArn:
+    Description: Lambda function ARN that processes requests
+    Value: !GetAtt ProcessRequestsFunction.Arn
 --- END: server_less/template.yaml ---
 
 --- START: server_less/src/handler.py ---
@@ -31,18 +244,90 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
-  
+
   db_port = var.engine == "aurora-mysql" ? 3306 : 5432
-  
+
 }
 --- END: IaC_Code/root/locals.tf ---
 
 --- START: IaC_Code/root/main.tf ---
+locals {
+  serverlessv2_min_capacity = var.environment == "prod" ? 1 : 0.5
+  serverlessv2_max_capacity = var.environment == "prod" ? 4 : 1
+  deletion_protection       = var.environment == "prod" ? true : false
+}
 
+module "rds_cluster" {
+  source = "../modules/rds-cluster"
+
+  project_name = var.project_name
+  environment  = var.environment
+
+  db_name         = var.db_name
+  master_username = var.master_username
+
+  engine         = var.engine
+  engine_version = var.engine_version
+
+  vpc_id = aws_vpc.serverless_vpc.id
+  private_subnet_ids = [
+    aws_subnet.private_rds_a.id,
+    aws_subnet.private_rds_b.id
+  ]
+
+  allowed_security_group_ids = []
+
+  backup_retention_period = var.backup_retention_period
+  deletion_protection     = local.deletion_protection
+
+  serverlessv2_min_capacity = local.serverlessv2_min_capacity
+  serverlessv2_max_capacity = local.serverlessv2_max_capacity
+
+  tags = merge(local.common_tags, {
+    Component = "database"
+    Name      = "${local.name_prefix}-aurora"
+  })
+}
 --- END: IaC_Code/root/main.tf ---
 
 --- START: IaC_Code/root/outputs.tf ---
+output "vpc_id" {
+  description = "VPC ID created for the Aurora deployment"
+  value       = aws_vpc.serverless_vpc.id
+}
 
+output "private_subnet_ids" {
+  description = "Private subnet IDs used by the Aurora DB subnet group"
+  value = [
+    aws_subnet.private_rds_a.id,
+    aws_subnet.private_rds_b.id
+  ]
+}
+
+output "rds_cluster_id" {
+  description = "Aurora cluster ID"
+  value       = module.rds_cluster.cluster_id
+}
+
+output "rds_cluster_endpoint" {
+  description = "Aurora writer endpoint"
+  value       = module.rds_cluster.cluster_endpoint
+}
+
+output "rds_reader_endpoint" {
+  description = "Aurora reader endpoint"
+  value       = module.rds_cluster.reader_endpoint
+}
+
+output "rds_security_group_id" {
+  description = "Security group attached to the Aurora cluster"
+  value       = module.rds_cluster.security_group_id
+}
+
+output "db_subnet_group_name" {
+  description = "DB subnet group name"
+  value       = module.rds_cluster.db_subnet_group_name
+}
 --- END: IaC_Code/root/outputs.tf ---
 
 --- START: IaC_Code/root/providers.tf ---
@@ -110,13 +395,13 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name"
   type        = string
-  default = "Aurora_serverless_Project"
+  default     = "aurora_serverless_project"
 }
 
 variable "environment" {
   description = "Environment name"
   type        = string
-  
+
   validation {
     condition     = contains(["dev", "prod"], var.environment)
     error_message = "environment must be one of: dev, prod."
@@ -131,7 +416,7 @@ variable "db_name" {
 variable "master_username" {
   description = "Master username"
   type        = string
-  default = "admin"
+  default     = "admin"
 }
 
 variable "engine" {
@@ -166,7 +451,7 @@ variable "backup_retention_period" {
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
-  default = "10.0.0.0/16"
+  default     = "10.0.0.0/16"
 }
 
 variable "private_subnet_a_cidr" {
@@ -183,12 +468,58 @@ variable "private_subnet_b_cidr" {
 --- END: IaC_Code/root/variables.tf ---
 
 --- START: IaC_Code/root/vpc.tf ---
+resource "aws_vpc" "serverless_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  tags = merge(local.common_tags, {
+    Name = "serverless_vpc"
+  })
+}
+resource "aws_subnet" "private_rds_a" {
+  vpc_id                  = aws_vpc.serverless_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = false
+  tags = merge(local.common_tags, {
+    Name = "private_rds_a"
+  })
+}
 
+resource "aws_subnet" "private_rds_b" {
+  vpc_id                  = aws_vpc.serverless_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[1]
+  map_public_ip_on_launch = false
+  tags = merge(local.common_tags, {
+    Name = "private_rds_b"
+  })
+}
+
+resource "aws_route_table" "private_rds_rt" {
+  vpc_id = aws_vpc.serverless_vpc.id
+  tags = merge(local.common_tags, {
+    Name = "private_rds_rt"
+  })
+
+}
+
+resource "aws_route_table_association" "private_rds_a_assoc" {
+  subnet_id      = aws_subnet.private_rds_a.id
+  route_table_id = aws_route_table.private_rds_rt.id
+}
+
+resource "aws_route_table_association" "private_rds_b_assoc" {
+  subnet_id      = aws_subnet.private_rds_b.id
+  route_table_id = aws_route_table.private_rds_rt.id
+}
 --- END: IaC_Code/root/vpc.tf ---
 
 --- START: IaC_Code/modules/rds-cluster/locals.tf ---
 locals {
-  name_prefix         = "${var.project_name}-${var.environment}"
+  sanitized_project_name = lower(replace(var.project_name, "_", "-"))
+
+  name_prefix         = "${local.sanitized_project_name}-${var.environment}"
   cluster_identifier  = "${local.name_prefix}-aurora-cluster"
   subnet_group_name   = "${local.name_prefix}-db-subnet-group"
   security_group_name = "${local.name_prefix}-db-sg"
@@ -201,7 +532,8 @@ locals {
     },
     var.tags
   )
-  db_port = var.engine == "aurora-mysql" ? 3306 : 5432
+
+  db_port                   = var.engine == "aurora-mysql" ? 3306 : 5432
   final_snapshot_identifier = "${local.name_prefix}-final-snapshot"
 }
 --- END: IaC_Code/modules/rds-cluster/locals.tf ---
@@ -255,9 +587,9 @@ resource "aws_rds_cluster" "db_cluster" {
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
 
-  backup_retention_period = var.backup_retention_period
-  deletion_protection     = var.deletion_protection
-  skip_final_snapshot     = var.environment == "prod" ? false : true
+  backup_retention_period   = var.backup_retention_period
+  deletion_protection       = var.deletion_protection
+  skip_final_snapshot       = var.environment == "prod" ? false : true
   final_snapshot_identifier = var.environment == "prod" ? local.final_snapshot_identifier : null
   serverlessv2_scaling_configuration {
     min_capacity = var.serverlessv2_min_capacity
