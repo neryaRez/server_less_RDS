@@ -60,7 +60,7 @@ resource "aws_iam_role" "circleci_deploy_role" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "oidc.circleci.com/org/${var.circleci_org_id}:aud"                          = var.circleci_org_id
+            "oidc.circleci.com/org/${var.circleci_org_id}:aud"                           = var.circleci_org_id
             "oidc.circleci.com/org/${var.circleci_org_id}:oidc.circleci.com/project-id" = var.circleci_project_id
           }
         }
@@ -110,6 +110,17 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
         Effect = "Allow"
         Action = [
           "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:CreateKey",
+          "kms:TagResource",
+          "kms:CreateAlias",
+          "kms:PutKeyPolicy",
+          "kms:DescribeKey"
         ]
         Resource = "*"
       }
