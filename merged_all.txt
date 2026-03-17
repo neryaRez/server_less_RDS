@@ -9,12 +9,6 @@ Parameters:
     Type: String
     Default: aurora-serverless-project
 
-  EnvironmentName:
-    Type: String
-    AllowedValues:
-      - dev
-      - prod
-
   GitHubOwner:
     Type: String
     Description: GitHub organization or username
@@ -40,14 +34,13 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.10
     Timeout: 60
     MemorySize: 256
     Tracing: Active
     Environment:
       Variables:
         PROJECT_NAME: !Ref ProjectName
-        ENVIRONMENT_NAME: !Ref EnvironmentName
         GITHUB_OWNER: !Ref GitHubOwner
         GITHUB_REPO: !Ref GitHubRepo
         GITHUB_BASE_BRANCH: !Ref GitHubBaseBranch
@@ -59,12 +52,12 @@ Resources:
   RequestsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub '${ProjectName}-${EnvironmentName}-requests-topic'
+      TopicName: !Sub '${ProjectName}-requests-topic'
 
   RequestsQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-queue'
+      QueueName: !Sub '${ProjectName}-requests-queue'
       VisibilityTimeout: 120
       MessageRetentionPeriod: 345600
       RedrivePolicy:
@@ -74,7 +67,7 @@ Resources:
   RequestsDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-dlq'
+      QueueName: !Sub '${ProjectName}-requests-dlq'
       MessageRetentionPeriod: 1209600
 
   RequestsQueuePolicy:
@@ -105,7 +98,7 @@ Resources:
   ApiGatewayPublishRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ProjectName}-${EnvironmentName}-apigw-sns-role'
+      RoleName: !Sub '${ProjectName}-apigw-sns-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -126,7 +119,7 @@ Resources:
   ProcessRequestsFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub '${ProjectName}-${EnvironmentName}-process-requests'
+      FunctionName: !Sub '${ProjectName}-process-requests'
       CodeUri: src/
       Handler: handler.lambda_handler
       Description: Consumes SQS messages and creates GitHub PRs with Terraform changes
@@ -151,13 +144,13 @@ Resources:
   ServerlessApi:
     Type: AWS::Serverless::Api
     Properties:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-api'
-      StageName: !Ref EnvironmentName
+      Name: !Sub '${ProjectName}-api'
+      StageName: api
       TracingEnabled: true
       DefinitionBody:
         swagger: '2.0'
         info:
-          title: !Sub '${ProjectName}-${EnvironmentName}-request-api'
+          title: !Sub '${ProjectName}-request-api'
           version: '1.0'
         schemes:
           - https
@@ -201,8 +194,7 @@ Resources:
 Outputs:
   ApiUrl:
     Description: API endpoint for submitting RDS provisioning requests
-    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/requests'
-
+    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/api/requests'
   RequestsTopicArn:
     Description: SNS topic ARN for incoming provisioning requests
     Value: !Ref RequestsTopic
@@ -217,12 +209,458 @@ Outputs:
 --- END: server_less/template.yaml ---
 
 --- START: server_less/src/handler.py ---
+import base64
+import json
+import logging
+import os
+import uuid
 
+import boto3
+import requests
+
+
+logger = logging.getLogger()
+logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
+ssm = boto3.client("ssm")
+
+GITHUB_API_URL = "https://api.github.com"
+
+
+def lambda_handler(event, context):
+    failures = []
+
+    for record in event.get("Records", []):
+        message_id = record["messageId"]
+
+        try:
+            payload = json.loads(record["body"])
+            validated = validate_payload(payload)
+
+            github_token = get_github_token()
+            owner = os.environ["GITHUB_OWNER"]
+            repo = os.environ["GITHUB_REPO"]
+            base_branch = os.environ["GITHUB_BASE_BRANCH"]
+
+            branch_name = build_branch_name(validated["environment"], validated["database_name"])
+            file_path, file_content = build_tfvars_file(
+                validated["environment"],
+                validated["database_name"],
+                validated["database_engine"],
+            )
+
+            session = build_github_session(github_token)
+
+            base_sha = get_branch_sha(session, owner, repo, base_branch)
+            create_branch(session, owner, repo, branch_name, base_sha)
+
+            create_or_update_file(
+                session=session,
+                owner=owner,
+                repo=repo,
+                branch=branch_name,
+                file_path=file_path,
+                file_content=file_content,
+                commit_message=f"Add RDS request for {validated['database_name']}",
+            )
+
+            create_pull_request(
+                session=session,
+                owner=owner,
+                repo=repo,
+                head_branch=branch_name,
+                base_branch=base_branch,
+                title=f"Provision {validated['environment']} DB: {validated['database_name']}",
+                body=build_pr_body(validated),
+            )
+
+            logger.info(
+                "Processed request successfully for database %s",
+                validated["database_name"],
+            )
+
+        except Exception as exc:
+            logger.exception("Failed processing message %s: %s", message_id, exc)
+            failures.append({"itemIdentifier": message_id})
+
+    return {"batchItemFailures": failures}
+
+
+def validate_payload(payload):
+    database_name = payload.get("database_name")
+    database_engine = payload.get("database_engine")
+    environment = payload.get("environment")
+
+    if not database_name:
+        raise ValueError("database_name is required")
+
+    if environment not in ["dev", "prod"]:
+        raise ValueError("environment must be dev or prod")
+
+    engine_map = {
+        "mysql": "aurora-mysql",
+        "postgresql": "aurora-postgresql",
+        "aurora-mysql": "aurora-mysql",
+        "aurora-postgresql": "aurora-postgresql",
+    }
+
+    if database_engine not in engine_map:
+        raise ValueError("database_engine must be mysql or postgresql")
+
+    return {
+        "database_name": sanitize_name(database_name),
+        "database_engine": engine_map[database_engine],
+        "environment": environment,
+    }
+
+
+def sanitize_name(name):
+    cleaned = name.strip().lower().replace(" ", "-")
+    cleaned = "".join(c for c in cleaned if c.isalnum() or c in "-_")
+
+    if not cleaned:
+        raise ValueError("database_name is invalid")
+
+    return cleaned
+
+
+def get_github_token():
+    parameter_name = os.environ["GITHUB_TOKEN_PARAMETER_NAME"]
+    response = ssm.get_parameter(Name=parameter_name, WithDecryption=True)
+    return response["Parameter"]["Value"]
+
+
+def build_branch_name(environment, database_name):
+    suffix = uuid.uuid4().hex[:8]
+    return f"rds-request/{environment}/{database_name}-{suffix}"
+
+
+def build_tfvars_file(environment, database_name, database_engine):
+    file_path = f"requests/{environment}/{database_name}.tfvars"
+
+    content = f'''db_name     = "{database_name}"
+environment = "{environment}"
+engine      = "{database_engine}"
+'''
+
+    return file_path, content
+
+
+def build_pr_body(payload):
+    return f"""Automated request for RDS provisioning
+
+- DB Name: {payload["database_name"]}
+- Engine: {payload["database_engine"]}
+- Environment: {payload["environment"]}
+"""
+
+
+def build_github_session(github_token):
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {github_token}",
+            "User-Agent": "aurora-serverless-lambda",
+        }
+    )
+    return session
+
+
+def get_branch_sha(session, owner, repo, branch_name):
+    response = session.get(
+        f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/ref/heads/{branch_name}",
+        timeout=20,
+    )
+    check_github_response(response, 200)
+    return response.json()["object"]["sha"]
+
+
+def create_branch(session, owner, repo, branch_name, sha):
+    response = session.post(
+        f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/refs",
+        json={
+            "ref": f"refs/heads/{branch_name}",
+            "sha": sha,
+        },
+        timeout=20,
+    )
+
+    if response.status_code in [201, 422]:
+        return
+
+    check_github_response(response, 201)
+
+
+def create_or_update_file(session, owner, repo, branch, file_path, file_content, commit_message):
+    existing_sha = None
+
+    get_response = session.get(
+        f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{file_path}",
+        params={"ref": branch},
+        timeout=20,
+    )
+
+    if get_response.status_code == 200:
+        existing_sha = get_response.json()["sha"]
+    elif get_response.status_code != 404:
+        check_github_response(get_response, 200)
+
+    body = {
+        "message": commit_message,
+        "content": base64.b64encode(file_content.encode("utf-8")).decode("utf-8"),
+        "branch": branch,
+    }
+
+    if existing_sha:
+        body["sha"] = existing_sha
+
+    put_response = session.put(
+        f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{file_path}",
+        json=body,
+        timeout=20,
+    )
+
+    if put_response.status_code not in [200, 201]:
+        check_github_response(put_response, 201)
+
+
+def create_pull_request(session, owner, repo, head_branch, base_branch, title, body):
+    response = session.post(
+        f"{GITHUB_API_URL}/repos/{owner}/{repo}/pulls",
+        json={
+            "title": title,
+            "head": head_branch,
+            "base": base_branch,
+            "body": body,
+        },
+        timeout=20,
+    )
+    check_github_response(response, 201)
+    return response.json()["html_url"]
+
+
+def check_github_response(response, expected_status):
+    if response.status_code != expected_status:
+        raise RuntimeError(
+            f"GitHub API error: status={response.status_code}, body={response.text}"
+        )
 --- END: server_less/src/handler.py ---
 
 --- START: .circleci/config.yml ---
+version: 2.1
 
+orbs:
+  aws-cli: circleci/aws-cli@5.1.0
+
+jobs:
+  deploy_on_main:
+    docker:
+      - image: cimg/python:3.10
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - run:
+          name: Install system packages
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y unzip curl
+
+      - run:
+          name: Install Terraform
+          command: |
+            curl -fsSL https://releases.hashicorp.com/terraform/1.14.0/terraform_1.14.0_linux_amd64.zip -o terraform.zip
+            unzip -o terraform.zip
+            sudo mv terraform /usr/local/bin/terraform
+            terraform version
+
+      - run:
+          name: Install AWS SAM CLI
+          command: |
+            curl -Lo aws-sam-cli-linux-x86_64.zip https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip
+            unzip -o aws-sam-cli-linux-x86_64.zip -d sam-installation
+            sudo ./sam-installation/install --update
+            sam --version
+
+      - run:
+          name: Install Lambda dependencies
+          command: |
+            python -m pip install --upgrade pip
+            if [ -f server_less/src/requirements.txt ]; then
+              pip install -r server_less/src/requirements.txt
+            fi
+
+      - aws-cli/setup:
+          profile_name: default
+          role_arn: ${AWS_ROLE_ARN}
+          region: ${AWS_REGION}
+
+      - run:
+          name: Validate and build SAM
+          command: |
+            cd server_less
+            sam validate
+            sam build
+
+      - run:
+          name: Deploy SAM stack
+          command: |
+            cd server_less
+            sam deploy \
+              --stack-name "${SAM_STACK_NAME}" \
+              --region "${AWS_REGION}" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --resolve-s3 \
+              --no-confirm-changeset \
+              --no-fail-on-empty-changeset \
+              --parameter-overrides \
+                ProjectName="${PROJECT_NAME}" \
+                GitHubOwner="${GITHUB_OWNER}" \
+                GitHubRepo="${GITHUB_REPO}" \
+                GitHubBaseBranch="${GITHUB_BASE_BRANCH}" \
+                GitHubTokenParameterName="${GITHUB_TOKEN_PARAMETER_NAME}" \
+                TerraformRootPath="${TERRAFORM_ROOT_PATH}"
+
+      - run:
+          name: Terraform init and apply
+          command: |
+            cd ~/project
+
+            REQUEST_FILE=$(find requests -name "*.tfvars" -type f | sort | tail -n 1)
+
+            if [ -z "$REQUEST_FILE" ]; then
+              echo "No request tfvars file found under requests/"
+              exit 1
+            fi
+
+            echo "Using request file: $REQUEST_FILE"
+
+            cd IaC_Code/root
+            chmod +x init.sh
+            ./init.sh
+            terraform apply -auto-approve -var-file="../../$REQUEST_FILE"
+
+workflows:
+  deploy_main_only:
+    jobs:
+      - deploy_on_main:
+          filters:
+            branches:
+              only: main
 --- END: .circleci/config.yml ---
+
+--- START: IaC_Code/backend/main.tf ---
+terraform {
+  required_version = ">= 1.3.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "project_name" {
+  type    = string
+  default = "serverless-rds"
+}
+
+variable "bucket_prefix" {
+  type    = string
+  default = "tfstate"
+}
+
+variable "lock_table_prefix" {
+  type    = string
+  default = "terraform-locks"
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+data "aws_caller_identity" "current" {}
+
+locals {
+  normalized_project = lower(replace(var.project_name, "_", "-"))
+
+  bucket_name = lower(
+    "${local.normalized_project}-${var.bucket_prefix}-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  )
+
+  dynamodb_table_name = lower(
+    "${local.normalized_project}-${var.lock_table_prefix}-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  )
+}
+
+resource "aws_s3_bucket" "tfstate" {
+  bucket = local.bucket_name
+}
+
+resource "aws_s3_bucket_versioning" "tfstate" {
+  bucket = aws_s3_bucket.tfstate.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "tfstate" {
+  bucket = aws_s3_bucket.tfstate.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "tfstate" {
+  bucket                  = aws_s3_bucket.tfstate.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_dynamodb_table" "lock" {
+  name         = local.dynamodb_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
+
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+}
+
+output "tfstate_bucket" {
+  value = aws_s3_bucket.tfstate.bucket
+}
+
+output "dynamodb_table" {
+  value = aws_dynamodb_table.lock.name
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+--- END: IaC_Code/backend/main.tf ---
+
+--- START: IaC_Code/root/backend.tf ---
+terraform {
+  backend "s3" {}
+}
+--- END: IaC_Code/root/backend.tf ---
 
 --- START: IaC_Code/root/data.tf ---
 data "aws_caller_identity" "current" {}
@@ -233,6 +671,41 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 --- END: IaC_Code/root/data.tf ---
+
+--- START: IaC_Code/root/init.sh ---
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENVIRONMENT="${1:-dev}"
+STATE_KEY="${2:-root/${ENVIRONMENT}/terraform.tfstate}"
+BACKEND_PROJECT_NAME="${BACKEND_PROJECT_NAME:-serverless-rds}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+
+aws sts get-caller-identity > /dev/null 2>&1 || {
+  echo "❌ AWS CLI not configured. Run aws configure first."
+  exit 1
+}
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+BUCKET="${BACKEND_PROJECT_NAME}-tfstate-${ACCOUNT_ID}-${AWS_REGION}"
+LOCK_TABLE="${BACKEND_PROJECT_NAME}-terraform-locks-${ACCOUNT_ID}-${AWS_REGION}"
+
+echo "🔹 Initializing backend Terraform stack..."
+echo "   Bucket: ${BUCKET}"
+echo "   Lock table: ${LOCK_TABLE}"
+echo "   Region: ${AWS_REGION}"
+echo "   State key: ${STATE_KEY}"
+
+terraform init -reconfigure \
+  -backend-config="bucket=${BUCKET}" \
+  -backend-config="key=${STATE_KEY}" \
+  -backend-config="region=${AWS_REGION}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}" \
+  -backend-config="encrypt=true"
+
+echo "✅ Terraform backend initialized successfully."
+--- END: IaC_Code/root/init.sh ---
 
 --- START: IaC_Code/root/locals.tf ---
 locals {
@@ -255,6 +728,22 @@ locals {
   serverlessv2_min_capacity = var.environment == "prod" ? 1 : 0.5
   serverlessv2_max_capacity = var.environment == "prod" ? 4 : 1
   deletion_protection       = var.environment == "prod" ? true : false
+}
+
+resource "aws_kms_key" "rds" {
+  description             = "KMS key for Aurora cluster and master user secret"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-rds-kms"
+    Component = "security"
+  })
+}
+
+resource "aws_kms_alias" "rds" {
+  name          = "alias/${local.name_prefix}-rds"
+  target_key_id = aws_kms_key.rds.key_id
 }
 
 module "rds_cluster" {
@@ -282,6 +771,10 @@ module "rds_cluster" {
 
   serverlessv2_min_capacity = local.serverlessv2_min_capacity
   serverlessv2_max_capacity = local.serverlessv2_max_capacity
+
+  manage_master_user_password = true
+  master_password             = null
+  kms_key_arn                 = aws_kms_key.rds.arn
 
   tags = merge(local.common_tags, {
     Component = "database"
@@ -380,7 +873,7 @@ resource "aws_ssm_parameter" "db_name" {
   description = "Initial database name"
   type        = "String"
   value       = var.db_name
-
+  
   tags = local.common_tags
 }
 --- END: IaC_Code/root/ssm.tf ---
@@ -515,6 +1008,171 @@ resource "aws_route_table_association" "private_rds_b_assoc" {
 }
 --- END: IaC_Code/root/vpc.tf ---
 
+--- START: IaC_Code/oidc_circleCI/backend.tf ---
+terraform {
+  backend "s3" {}
+}
+--- END: IaC_Code/oidc_circleCI/backend.tf ---
+
+--- START: IaC_Code/oidc_circleCI/init.sh ---
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_KEY="${1:-oidc/terraform.tfstate}"
+BACKEND_PROJECT_NAME="${BACKEND_PROJECT_NAME:-serverless-rds}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+
+aws sts get-caller-identity > /dev/null 2>&1 || {
+  echo "❌ AWS CLI not configured. Run aws configure first."
+  exit 1
+}
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+BUCKET="${BACKEND_PROJECT_NAME}-tfstate-${ACCOUNT_ID}-${AWS_REGION}"
+LOCK_TABLE="${BACKEND_PROJECT_NAME}-terraform-locks-${ACCOUNT_ID}-${AWS_REGION}"
+
+echo "🔹 Initializing OIDC Terraform backend..."
+echo "   Bucket: ${BUCKET}"
+echo "   Lock table: ${LOCK_TABLE}"
+echo "   Region: ${AWS_REGION}"
+echo "   State key: ${STATE_KEY}"
+
+terraform init -reconfigure \
+  -backend-config="bucket=${BUCKET}" \
+  -backend-config="key=${STATE_KEY}" \
+  -backend-config="region=${AWS_REGION}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}" \
+  -backend-config="encrypt=true"
+
+echo "✅ OIDC Terraform backend initialized successfully."
+--- END: IaC_Code/oidc_circleCI/init.sh ---
+
+--- START: IaC_Code/oidc_circleCI/oidc.tf ---
+variable "circleci_org_id" {
+  type = string
+}
+
+variable "circleci_project_id" {
+  type = string
+}
+
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+data "tls_certificate" "circleci" {
+  url = "https://oidc.circleci.com/org/${var.circleci_org_id}"
+}
+
+resource "aws_iam_openid_connect_provider" "circleci" {
+  url = "https://oidc.circleci.com/org/${var.circleci_org_id}"
+
+  client_id_list = [
+    var.circleci_org_id
+  ]
+
+  thumbprint_list = [
+    data.tls_certificate.circleci.certificates[0].sha1_fingerprint
+  ]
+}
+
+resource "aws_iam_role" "circleci_deploy_role" {
+  name = "circleci-deploy-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.circleci.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "oidc.circleci.com/org/${var.circleci_org_id}:aud"                          = var.circleci_org_id
+            "oidc.circleci.com/org/${var.circleci_org_id}:oidc.circleci.com/project-id" = var.circleci_project_id
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "circleci_deploy_policy" {
+  name = "circleci-deploy-policy"
+  role = aws_iam_role.circleci_deploy_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudformation:*",
+          "lambda:*",
+          "apigateway:*",
+          "iam:PassRole",
+          "iam:GetRole",
+          "iam:CreateRole",
+          "iam:AttachRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:DeleteRole",
+          "logs:*",
+          "sqs:*",
+          "sns:*",
+          "ssm:*",
+          "xray:*",
+          "s3:*",
+          "ec2:*",
+          "rds:*",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DescribeTable"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+output "circleci_role_arn" {
+  value = aws_iam_role.circleci_deploy_role.arn
+}
+--- END: IaC_Code/oidc_circleCI/oidc.tf ---
+
 --- START: IaC_Code/modules/rds-cluster/locals.tf ---
 locals {
   sanitized_project_name = lower(replace(var.project_name, "_", "-"))
@@ -579,10 +1237,13 @@ resource "aws_rds_cluster" "db_cluster" {
 
   database_name = var.db_name
 
-  master_username               = var.master_username
-  manage_master_user_password   = var.manage_master_user_password
-  master_password               = var.manage_master_user_password ? null : var.master_password
-  master_user_secret_kms_key_id = var.manage_master_user_password ? var.master_user_secret_kms_key_id : null
+  master_username             = var.master_username
+  manage_master_user_password = var.manage_master_user_password
+  master_password             = var.manage_master_user_password ? null : var.master_password
+
+  storage_encrypted             = true
+  kms_key_id                    = var.kms_key_arn
+  master_user_secret_kms_key_id = var.manage_master_user_password ? var.kms_key_arn : null
 
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
@@ -591,6 +1252,7 @@ resource "aws_rds_cluster" "db_cluster" {
   deletion_protection       = var.deletion_protection
   skip_final_snapshot       = var.environment == "prod" ? false : true
   final_snapshot_identifier = var.environment == "prod" ? local.final_snapshot_identifier : null
+
   serverlessv2_scaling_configuration {
     min_capacity = var.serverlessv2_min_capacity
     max_capacity = var.serverlessv2_max_capacity
@@ -676,12 +1338,6 @@ variable "master_password" {
   default     = null
 }
 
-variable "master_user_secret_kms_key_id" {
-  description = "Optional KMS key ID for the AWS-managed master user secret"
-  type        = string
-  default     = null
-}
-
 variable "vpc_id" {
   description = "VPC ID where the RDS cluster will be deployed"
   type        = string
@@ -738,6 +1394,11 @@ variable "serverlessv2_max_capacity" {
   description = "Maximum Aurora Serverless v2 capacity in ACUs"
   type        = number
   default     = 2
+}
+
+variable "kms_key_arn" {
+  description = "ARN of the KMS key used to encrypt the Aurora cluster and the master user secret"
+  type        = string
 }
 --- END: IaC_Code/modules/rds-cluster/variables.tf ---
 

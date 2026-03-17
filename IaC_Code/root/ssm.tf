@@ -30,6 +30,6 @@ resource "aws_ssm_parameter" "db_name" {
   description = "Initial database name"
   type        = "String"
   value       = var.db_name
-  
+
   tags = local.common_tags
 }

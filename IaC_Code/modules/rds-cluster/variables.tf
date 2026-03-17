@@ -36,12 +36,6 @@ variable "master_password" {
   default     = null
 }
 
-variable "master_user_secret_kms_key_id" {
-  description = "Optional KMS key ID for the AWS-managed master user secret"
-  type        = string
-  default     = null
-}
-
 variable "vpc_id" {
   description = "VPC ID where the RDS cluster will be deployed"
   type        = string
@@ -103,17 +97,4 @@ variable "serverlessv2_max_capacity" {
 variable "kms_key_arn" {
   description = "ARN of the KMS key used to encrypt the Aurora cluster and the master user secret"
   type        = string
-}
-
-variable "manage_master_user_password" {
-  description = "Whether RDS should manage the master password in Secrets Manager"
-  type        = bool
-  default     = true
-}
-
-variable "master_password" {
-  description = "Master password when manage_master_user_password is false"
-  type        = string
-  default     = null
-  sensitive   = true
 }
