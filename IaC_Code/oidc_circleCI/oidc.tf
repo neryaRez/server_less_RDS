@@ -100,6 +100,13 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
           "rds:*"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
       }
     ]
   })
