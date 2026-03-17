@@ -117,14 +117,20 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
   Effect = "Allow"
   Action = [
     "kms:CreateKey",
-    "kms:TagResource",
-    "kms:CreateAlias",
+    "kms:DescribeKey",
     "kms:PutKeyPolicy",
     "kms:GetKeyPolicy",
-    "kms:DescribeKey",
-    "kms:EnableKeyRotation",
+    "kms:CreateAlias",
+    "kms:UpdateAlias",
+    "kms:DeleteAlias",
+    "kms:ListAliases",
+    "kms:TagResource",
+    "kms:UntagResource",
     "kms:ListResourceTags",
-    "kms:ListAliases"
+    "kms:EnableKeyRotation",
+    "kms:GetKeyRotationStatus",
+    "kms:ScheduleKeyDeletion",
+    "kms:CancelKeyDeletion"
   ]
   Resource = "*"
 }
