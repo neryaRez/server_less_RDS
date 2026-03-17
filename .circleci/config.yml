@@ -89,7 +89,8 @@ jobs:
             echo "Using request file: $REQUEST_FILE"
 
             cd IaC_Code/root
-            terraform init
+            chmod +x init.sh
+            ./init.sh
             terraform apply -auto-approve -var-file="../../$REQUEST_FILE"
 
 workflows:
