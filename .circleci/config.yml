@@ -79,10 +79,10 @@ jobs:
           command: |
             cd ~/project
 
-            REQUEST_FILE=$(git diff --name-only HEAD~1 HEAD | grep '^requests/.*\.tfvars$' | head -n 1)
+            REQUEST_FILE=$(find requests -name "*.tfvars" -type f | sort | tail -n 1)
 
             if [ -z "$REQUEST_FILE" ]; then
-              echo "No request tfvars file found in merged commit"
+              echo "No request tfvars file found under requests/"
               exit 1
             fi
 
