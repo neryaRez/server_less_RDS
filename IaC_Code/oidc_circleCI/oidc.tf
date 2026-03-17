@@ -97,7 +97,12 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
           "xray:*",
           "s3:*",
           "ec2:*",
-          "rds:*"
+          "rds:*",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DescribeTable"
         ]
         Resource = "*"
       },
