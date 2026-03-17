@@ -113,18 +113,21 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
         ]
         Resource = "*"
       },
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:CreateKey",
-          "kms:TagResource",
-          "kms:CreateAlias",
-          "kms:PutKeyPolicy",
-          "kms:DescribeKey",
-          "kms:EnableKeyRotation"
-        ]
-        Resource = "*"
-      }
+{
+  Effect = "Allow"
+  Action = [
+    "kms:CreateKey",
+    "kms:TagResource",
+    "kms:CreateAlias",
+    "kms:PutKeyPolicy",
+    "kms:GetKeyPolicy",
+    "kms:DescribeKey",
+    "kms:EnableKeyRotation",
+    "kms:ListResourceTags",
+    "kms:ListAliases"
+  ]
+  Resource = "*"
+}
     ]
   })
 }
