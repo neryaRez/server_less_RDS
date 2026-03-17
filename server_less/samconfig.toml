@@ -1,0 +1,19 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "serverless"
+resolve_s3 = true
+s3_prefix = "serverless"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_NAMED_IAM"
+disable_rollback = false
+parameter_overrides = [
+  "ProjectName=aurora-serverless-project",
+  "GitHubOwner=neryaRez",
+  "GitHubRepo=server_less_RDS",
+  "GitHubBaseBranch=main",
+  "GitHubTokenParameterName=/aurora-serverless/github/token",
+  "TerraformRootPath=IaC_Code/root"
+]
+image_repositories = []

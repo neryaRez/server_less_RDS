@@ -1,0 +1,2 @@
+circleci_org_id     = "YOUR_CIRCLECI_ORG_ID"
+circleci_project_id = "YOUR_CIRCLECI_PROJECT_ID"

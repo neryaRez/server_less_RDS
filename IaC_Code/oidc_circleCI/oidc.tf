@@ -8,7 +8,7 @@ variable "circleci_project_id" {
 
 variable "aws_region" {
   type    = string
-  default = "eu-west-1"
+  default = "us-east-1"
 }
 
 terraform {
@@ -60,11 +60,8 @@ resource "aws_iam_role" "circleci_deploy_role" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "oidc.circleci.com/org/${var.circleci_org_id}:aud" = var.circleci_org_id
+            "oidc.circleci.com/org/${var.circleci_org_id}:aud"                          = var.circleci_org_id
             "oidc.circleci.com/org/${var.circleci_org_id}:oidc.circleci.com/project-id" = var.circleci_project_id
-          }
-          StringLike = {
-            "oidc.circleci.com/org/${var.circleci_org_id}:sub" = "org/${var.circleci_org_id}/project/${var.circleci_project_id}/user/*"
           }
         }
       }
