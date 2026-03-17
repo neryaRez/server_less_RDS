@@ -120,7 +120,8 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
           "kms:TagResource",
           "kms:CreateAlias",
           "kms:PutKeyPolicy",
-          "kms:DescribeKey"
+          "kms:DescribeKey",
+          "kms:EnableKeyRotation"
         ]
         Resource = "*"
       }
