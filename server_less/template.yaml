@@ -7,12 +7,6 @@ Parameters:
     Type: String
     Default: aurora-serverless-project
 
-  EnvironmentName:
-    Type: String
-    AllowedValues:
-      - dev
-      - prod
-
   GitHubOwner:
     Type: String
     Description: GitHub organization or username
@@ -38,14 +32,13 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.10
     Timeout: 60
     MemorySize: 256
     Tracing: Active
     Environment:
       Variables:
         PROJECT_NAME: !Ref ProjectName
-        ENVIRONMENT_NAME: !Ref EnvironmentName
         GITHUB_OWNER: !Ref GitHubOwner
         GITHUB_REPO: !Ref GitHubRepo
         GITHUB_BASE_BRANCH: !Ref GitHubBaseBranch
@@ -57,12 +50,12 @@ Resources:
   RequestsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub '${ProjectName}-${EnvironmentName}-requests-topic'
+      TopicName: !Sub '${ProjectName}-requests-topic'
 
   RequestsQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-queue'
+      QueueName: !Sub '${ProjectName}-requests-queue'
       VisibilityTimeout: 120
       MessageRetentionPeriod: 345600
       RedrivePolicy:
@@ -72,7 +65,7 @@ Resources:
   RequestsDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub '${ProjectName}-${EnvironmentName}-requests-dlq'
+      QueueName: !Sub '${ProjectName}-requests-dlq'
       MessageRetentionPeriod: 1209600
 
   RequestsQueuePolicy:
@@ -103,7 +96,7 @@ Resources:
   ApiGatewayPublishRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ProjectName}-${EnvironmentName}-apigw-sns-role'
+      RoleName: !Sub '${ProjectName}-apigw-sns-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -124,7 +117,7 @@ Resources:
   ProcessRequestsFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub '${ProjectName}-${EnvironmentName}-process-requests'
+      FunctionName: !Sub '${ProjectName}-process-requests'
       CodeUri: src/
       Handler: handler.lambda_handler
       Description: Consumes SQS messages and creates GitHub PRs with Terraform changes
@@ -149,13 +142,13 @@ Resources:
   ServerlessApi:
     Type: AWS::Serverless::Api
     Properties:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-api'
-      StageName: !Ref EnvironmentName
+      Name: !Sub '${ProjectName}-api'
+      StageName: api
       TracingEnabled: true
       DefinitionBody:
         swagger: '2.0'
         info:
-          title: !Sub '${ProjectName}-${EnvironmentName}-request-api'
+          title: !Sub '${ProjectName}-request-api'
           version: '1.0'
         schemes:
           - https
@@ -199,8 +192,7 @@ Resources:
 Outputs:
   ApiUrl:
     Description: API endpoint for submitting RDS provisioning requests
-    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/requests'
-
+    Value: !Sub 'https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/api/requests'
   RequestsTopicArn:
     Description: SNS topic ARN for incoming provisioning requests
     Value: !Ref RequestsTopic
