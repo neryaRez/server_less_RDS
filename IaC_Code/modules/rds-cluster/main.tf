@@ -41,7 +41,6 @@ resource "aws_rds_cluster" "db_cluster" {
   master_username               = var.master_username
   manage_master_user_password   = var.manage_master_user_password
   master_password               = var.manage_master_user_password ? null : var.master_password
-  master_user_secret_kms_key_id = var.manage_master_user_password ? var.master_user_secret_kms_key_id : null
 
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
