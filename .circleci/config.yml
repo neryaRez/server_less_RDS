@@ -77,9 +77,20 @@ jobs:
       - run:
           name: Terraform init and apply
           command: |
+            cd ~/project
+
+            REQUEST_FILE=$(git diff --name-only HEAD~1 HEAD | grep '^requests/.*\.tfvars$' | head -n 1)
+
+            if [ -z "$REQUEST_FILE" ]; then
+              echo "No request tfvars file found in merged commit"
+              exit 1
+            fi
+
+            echo "Using request file: $REQUEST_FILE"
+
             cd IaC_Code/root
             terraform init
-            terraform apply -auto-approve
+            terraform apply -auto-approve -var-file="../../$REQUEST_FILE"
 
 workflows:
   deploy_main_only:
