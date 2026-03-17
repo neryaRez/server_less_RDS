@@ -99,3 +99,21 @@ variable "serverlessv2_max_capacity" {
   type        = number
   default     = 2
 }
+
+variable "kms_key_arn" {
+  description = "ARN of the KMS key used to encrypt the Aurora cluster and the master user secret"
+  type        = string
+}
+
+variable "manage_master_user_password" {
+  description = "Whether RDS should manage the master password in Secrets Manager"
+  type        = bool
+  default     = true
+}
+
+variable "master_password" {
+  description = "Master password when manage_master_user_password is false"
+  type        = string
+  default     = null
+  sensitive   = true
+}

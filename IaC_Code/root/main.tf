@@ -4,6 +4,22 @@ locals {
   deletion_protection       = var.environment == "prod" ? true : false
 }
 
+resource "aws_kms_key" "rds" {
+  description             = "KMS key for Aurora cluster and master user secret"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-rds-kms"
+    Component = "security"
+  })
+}
+
+resource "aws_kms_alias" "rds" {
+  name          = "alias/${local.name_prefix}-rds"
+  target_key_id = aws_kms_key.rds.key_id
+}
+
 module "rds_cluster" {
   source = "../modules/rds-cluster"
 
@@ -29,6 +45,10 @@ module "rds_cluster" {
 
   serverlessv2_min_capacity = local.serverlessv2_min_capacity
   serverlessv2_max_capacity = local.serverlessv2_max_capacity
+
+  manage_master_user_password = true
+  master_password             = null
+  kms_key_arn                 = aws_kms_key.rds.arn
 
   tags = merge(local.common_tags, {
     Component = "database"

@@ -38,9 +38,13 @@ resource "aws_rds_cluster" "db_cluster" {
 
   database_name = var.db_name
 
-  master_username               = var.master_username
-  manage_master_user_password   = var.manage_master_user_password
-  master_password               = var.manage_master_user_password ? null : var.master_password
+  master_username             = var.master_username
+  manage_master_user_password = var.manage_master_user_password
+  master_password             = var.manage_master_user_password ? null : var.master_password
+
+  storage_encrypted             = true
+  kms_key_id                    = var.kms_key_arn
+  master_user_secret_kms_key_id = var.manage_master_user_password ? var.kms_key_arn : null
 
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
@@ -49,6 +53,7 @@ resource "aws_rds_cluster" "db_cluster" {
   deletion_protection       = var.deletion_protection
   skip_final_snapshot       = var.environment == "prod" ? false : true
   final_snapshot_identifier = var.environment == "prod" ? local.final_snapshot_identifier : null
+
   serverlessv2_scaling_configuration {
     min_capacity = var.serverlessv2_min_capacity
     max_capacity = var.serverlessv2_max_capacity
