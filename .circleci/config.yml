@@ -6,7 +6,7 @@ orbs:
 jobs:
   deploy_on_main:
     docker:
-      - image: cimg/python:3.12
+      - image: cimg/python:3.10
 
     working_directory: ~/project
 
