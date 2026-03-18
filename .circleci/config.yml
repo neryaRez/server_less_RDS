@@ -1,81 +1,102 @@
-resource "aws_iam_role_policy" "circleci_deploy_policy" {
-  name = "circleci-deploy-policy"
-  role = aws_iam_role.circleci_deploy_role.id
+version: 2.1
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "cloudformation:*",
-          "lambda:*",
-          "apigateway:*",
-          "iam:PassRole",
-          "iam:GetRole",
-          "iam:CreateRole",
-          "iam:AttachRolePolicy",
-          "iam:PutRolePolicy",
-          "iam:DeleteRolePolicy",
-          "iam:DetachRolePolicy",
-          "iam:DeleteRole",
-          "logs:*",
-          "sqs:*",
-          "sns:*",
-          "ssm:*",
-          "xray:*",
-          "s3:*",
-          "ec2:*",
-          "rds:*",
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "iam:CreateServiceLinkedRole"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:CreateKey",
-          "kms:DescribeKey",
-          "kms:PutKeyPolicy",
-          "kms:GetKeyPolicy",
-          "kms:CreateAlias",
-          "kms:UpdateAlias",
-          "kms:DeleteAlias",
-          "kms:ListAliases",
-          "kms:TagResource",
-          "kms:UntagResource",
-          "kms:ListResourceTags",
-          "kms:EnableKeyRotation",
-          "kms:GetKeyRotationStatus",
-          "kms:ScheduleKeyDeletion",
-          "kms:CancelKeyDeletion",
-          "kms:GenerateDataKey",
-          "kms:Decrypt"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:DescribeSecret",
-          "secretsmanager:TagResource",
-          "secretsmanager:PutResourcePolicy",
-          "secretsmanager:UpdateSecret",
-          "secretsmanager:GetResourcePolicy"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
+orbs:
+  aws-cli: circleci/aws-cli@5.1.0
+
+jobs:
+  deploy_on_main:
+    docker:
+      - image: cimg/python:3.10
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - run:
+          name: Install system packages
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y unzip curl
+
+      - run:
+          name: Install Terraform
+          command: |
+            curl -fsSL https://releases.hashicorp.com/terraform/1.14.0/terraform_1.14.0_linux_amd64.zip -o terraform.zip
+            unzip -o terraform.zip
+            sudo mv terraform /usr/local/bin/terraform
+            terraform version
+
+      - run:
+          name: Install AWS SAM CLI
+          command: |
+            curl -Lo aws-sam-cli-linux-x86_64.zip https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip
+            unzip -o aws-sam-cli-linux-x86_64.zip -d sam-installation
+            sudo ./sam-installation/install --update
+            sam --version
+
+      - run:
+          name: Install Lambda dependencies
+          command: |
+            python -m pip install --upgrade pip
+            if [ -f server_less/src/requirements.txt ]; then
+              pip install -r server_less/src/requirements.txt
+            fi
+
+      - aws-cli/setup:
+          profile_name: default
+          role_arn: ${AWS_ROLE_ARN}
+          region: ${AWS_REGION}
+
+      - run:
+          name: Validate and build SAM
+          command: |
+            cd server_less
+            sam validate
+            sam build
+
+      - run:
+          name: Deploy SAM stack
+          command: |
+            cd server_less
+            sam deploy \
+              --stack-name "${SAM_STACK_NAME}" \
+              --region "${AWS_REGION}" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --resolve-s3 \
+              --no-confirm-changeset \
+              --no-fail-on-empty-changeset \
+              --parameter-overrides \
+                ProjectName="${PROJECT_NAME}" \
+                GitHubOwner="${GITHUB_OWNER}" \
+                GitHubRepo="${GITHUB_REPO}" \
+                GitHubBaseBranch="${GITHUB_BASE_BRANCH}" \
+                GitHubTokenParameterName="${GITHUB_TOKEN_PARAMETER_NAME}" \
+                TerraformRootPath="${TERRAFORM_ROOT_PATH}"
+
+      - run:
+          name: Terraform init and apply
+          command: |
+            cd ~/project
+
+            REQUEST_FILE=$(find requests -name "*.tfvars" -type f | sort | tail -n 1)
+
+            if [ -z "$REQUEST_FILE" ]; then
+              echo "No request tfvars file found under requests/"
+              exit 1
+            fi
+
+            echo "Using request file: $REQUEST_FILE"
+
+            cd IaC_Code/root
+            chmod +x init.sh
+            ./init.sh
+            terraform apply -auto-approve -var-file="../../$REQUEST_FILE"
+
+workflows:
+  deploy_main_only:
+    jobs:
+      - deploy_on_main:
+          filters:
+            branches:
+              only: main

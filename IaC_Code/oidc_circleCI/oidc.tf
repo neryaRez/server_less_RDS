@@ -90,6 +90,8 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
           "iam:DeleteRolePolicy",
           "iam:DetachRolePolicy",
           "iam:DeleteRole",
+          "iam:TagRole",
+          "iam:UntagRole",
           "logs:*",
           "sqs:*",
           "sns:*",
@@ -113,31 +115,46 @@ resource "aws_iam_role_policy" "circleci_deploy_policy" {
         ]
         Resource = "*"
       },
-{
-  Effect = "Allow"
-  Action = [
-    "kms:CreateKey",
-    "kms:DescribeKey",
-    "kms:PutKeyPolicy",
-    "kms:GetKeyPolicy",
-    "kms:CreateAlias",
-    "kms:UpdateAlias",
-    "kms:DeleteAlias",
-    "kms:ListAliases",
-    "kms:TagResource",
-    "kms:UntagResource",
-    "kms:ListResourceTags",
-    "kms:EnableKeyRotation",
-    "kms:GetKeyRotationStatus",
-    "kms:ScheduleKeyDeletion",
-    "kms:CancelKeyDeletion"
-  ]
-  Resource = "*"
-}
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:CreateKey",
+          "kms:DescribeKey",
+          "kms:PutKeyPolicy",
+          "kms:GetKeyPolicy",
+          "kms:CreateAlias",
+          "kms:UpdateAlias",
+          "kms:DeleteAlias",
+          "kms:ListAliases",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ListResourceTags",
+          "kms:EnableKeyRotation",
+          "kms:GetKeyRotationStatus",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:GenerateDataKey",
+          "kms:Decrypt"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:TagResource",
+          "secretsmanager:PutResourcePolicy",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:GetResourcePolicy",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DeleteSecret"
+        ]
+        Resource = "*"
+      }
     ]
   })
 }
-
 output "circleci_role_arn" {
   value = aws_iam_role.circleci_deploy_role.arn
 }
