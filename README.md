@@ -103,6 +103,8 @@ terraform apply
 
 ### 4. Deploy the CircleCI OIDC infrastructure
 
+Fill in your CircleCI organization and project details in the `terraform.tfvars` file under `IaC_Code/oidc_circleCI`.
+
 ```bash
 cd IaC_Code/oidc_circleCI
 ./init.sh
@@ -111,7 +113,7 @@ terraform apply
 
 ### 5. Configure CircleCI
 
-Create a CircleCI project connected to the repository and define the required environment variables there,  in the config/.env.example file including:
+In your CircleCI project, define the required environment variables based on the `config/.env.example` file, including:
 
 - `AWS_ROLE_ARN`
 - `AWS_REGION`
@@ -119,6 +121,8 @@ Create a CircleCI project connected to the repository and define the required en
 - `PROJECT_NAME`
 - `GITHUB_OWNER`
 - `GITHUB_REPO`
+
+
 
 ### 6. Send a provisioning request
 
@@ -165,6 +169,6 @@ More broadly, the project reflects the way I like to build systems: with automat
 
 ## About Me
 
-My name is **Nerya Reznikovich**, and I built this project as part of my learning journey in cloud, DevOps, and platform engineering.
+My name is **Nerya Reznikovich**, and I built this project as part of my hands-on learning journey in cloud, DevOps, and platform engineering.
 
 I enjoy building hands-on systems that combine infrastructure, automation, and software development, especially projects that simulate real operational workflows and not only basic service deployment demos.
