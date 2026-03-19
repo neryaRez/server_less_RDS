@@ -1,18 +1,18 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "serverless"
+stack_name = "Your stack_name"
 resolve_s3 = true
-s3_prefix = "serverless"
-region = "us-east-1"
+s3_prefix = "Your s3_prefix"
+region = "Your AWS_REGION"
 confirm_changeset = true
 capabilities = "CAPABILITY_NAMED_IAM"
 disable_rollback = false
 parameter_overrides = [
-  "ProjectName=aurora-serverless-project",
-  "GitHubOwner=Fill Your Own GitHubOwner Name",
-  "GitHubRepo=server_less_RDS",
-  "GitHubBaseBranch=Fill Your Own Branch",
+  "ProjectName=Your project-name",
+  "GitHubOwner=Fill Your Own GitHub owner Name",
+  "GitHubRepo=Fill your GitHub repo name",
+  "GitHubBaseBranch=Fill your own base branch",
   "GitHubTokenParameterName=/aurora-serverless/github/token",
   "TerraformRootPath=IaC_Code/root"
 ]
