@@ -1,161 +1,80 @@
-# Aurora Serverless Request-Driven Provisioning Platform
+# Aurora Serverless Provisioning Automation
 
-> A production-style cloud automation project that lets users request a new Aurora environment through an API, automatically opens a GitHub Pull Request with the infrastructure change, and provisions the database through Terraform and CircleCI.
+A cloud automation project for provisioning Aurora environments in AWS through an API-driven workflow.
 
-## Why this project stands out
+Instead of manually editing infrastructure files for every new database request, this project accepts a request through an API, generates the matching Terraform input automatically, opens a Pull Request in GitHub, and lets CircleCI complete the provisioning flow.
 
-This project is more than a basic infrastructure demo. It shows an end-to-end workflow that combines:
-
-- **Serverless request intake** with API Gateway, SNS, SQS, and Lambda
-- **Infrastructure as Code** with modular Terraform
-- **Secure CI/CD authentication** using CircleCI OIDC instead of long-lived AWS keys
-- **Automated GitOps-style change creation** by generating request-specific `.tfvars` files and opening Pull Requests automatically
-- **Aurora Serverless provisioning** with different sizing logic for `dev` and `prod`
-- **Operational thinking** with DLQ support, remote Terraform state, state locking, KMS encryption, SSM parameters, and private subnets
-
-For a junior DevOps / Cloud / Platform / SRE candidate, this is exactly the kind of project that signals systems thinking rather than isolated scripting.
+I built this project to demonstrate practical work across serverless architecture, Terraform, CI/CD, and secure AWS automation.
 
 ---
 
-## What it does
+## Overview
 
-A user sends a simple API request with:
+The system receives a request containing:
 
 - `database_name`
-- `database_engine` (`mysql` or `postgresql`)
-- `environment` (`dev` or `prod`)
+- `database_engine`
+- `environment`
 
-The platform then:
+From there, the flow is:
 
-1. Accepts the request through **API Gateway**
-2. Pushes it through **SNS** into **SQS**
-3. Processes it in **Lambda**
-4. Validates the payload
-5. Creates a request-specific Terraform variables file under `requests/<env>/`
-6. Opens a **GitHub Pull Request** automatically
-7. Lets **CircleCI** pick up the change
-8. Runs **Terraform** to provision the Aurora environment in AWS
+1. API Gateway receives the request
+2. SNS forwards it to SQS
+3. Lambda validates the payload
+4. Lambda creates a matching `.tfvars` request file
+5. Lambda opens a Pull Request in GitHub
+6. CircleCI runs the pipeline
+7. Terraform provisions the Aurora environment in AWS
 
----
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A[Client POST /requests] --> B[API Gateway]
-    B --> C[SNS Topic]
-    C --> D[SQS Queue]
-    D --> E[Lambda Processor]
-    E --> F[GitHub Branch + Commit + PR]
-    F --> G[CircleCI Pipeline]
-    G --> H[Terraform Root]
-    H --> I[Aurora Serverless Cluster]
-    G --> J[S3 Remote State]
-    G --> K[DynamoDB Lock Table]
-```
-
-### Main building blocks
-
-**Serverless layer**
-- API Gateway for request intake
-- SNS topic for decoupled fan-out entry point
-- SQS queue with DLQ for resilient asynchronous processing
-- Lambda for validation and GitHub automation
-
-**Terraform layer**
-- Remote backend with S3 + DynamoDB
-- Root stack for VPC, KMS, SSM, and module orchestration
-- Reusable `rds-cluster` module for Aurora resources
-
-**CI/CD layer**
-- CircleCI pipeline
-- OIDC-based AWS authentication
-- SAM deployment + Terraform apply
+In other words, this project turns a simple API request into a controlled infrastructure provisioning workflow.
 
 ---
 
-## Key technical highlights
+## Technologies Used
 
-### Request-driven infrastructure
-Instead of manually editing Terraform every time, a user submits a request through an API and the system generates the infrastructure change automatically.
-
-### GitHub automation from Lambda
-The Lambda function reads a GitHub token from SSM Parameter Store, creates a branch, writes a `.tfvars` request file, commits it, and opens a Pull Request.
-
-### Secure CI/CD with OIDC
-CircleCI authenticates to AWS using an IAM role and web identity trust, avoiding static AWS access keys.
-
-### Remote Terraform state done properly
-Terraform state is stored in S3 with DynamoDB locking, which is much closer to real team workflows.
-
-### Separation between `dev` and `prod`
-The input payload includes an environment field that influences Aurora sizing behavior.
-
-### Good cloud hygiene
-The project includes private subnets, KMS encryption, SSM parameters, dead-letter handling, example config files, and a modular Terraform structure.
+- AWS SAM
+- API Gateway
+- SNS
+- SQS
+- AWS Lambda
+- Terraform
+- Aurora Serverless v2
+- CircleCI
+- OIDC
+- AWS Systems Manager Parameter Store
+- KMS
+- S3 + DynamoDB for remote Terraform state
 
 ---
 
-## Repository structure
+## Repository Structure
 
 ```text
 .
 ├── config/
-│   └── .env.example
 ├── server_less/
-│   ├── samconfig.toml.example
-│   ├── template.yaml
-│   └── src/
-│       ├── handler.py
-│       └── requirements.txt
 ├── .circleci/
-│   └── config.yml
 └── IaC_Code/
     ├── backend/
-    │   └── main.tf
     ├── oidc_circleCI/
-    │   ├── backend.tf
-    │   ├── init.sh
-    │   ├── oidc.tf
-    │   └── terraform.tfvars.example
     ├── root/
-    │   ├── backend.tf
-    │   ├── data.tf
-    │   ├── init.sh
-    │   ├── locals.tf
-    │   ├── main.tf
-    │   ├── outputs.tf
-    │   ├── providers.tf
-    │   ├── ssm.tf
-    │   ├── variables.tf
-    │   └── vpc.tf
-    └── modules/
-        └── rds-cluster/
-            ├── locals.tf
-            ├── main.tf
-            ├── outputs.tf
-            ├── variables.tf
-            └── versions.tf
+    └── modules/rds-cluster/
 ```
 
 ---
 
-## Quick start
+## Running the Project
 
-### Prerequisites
-Before you run the project, make sure you already have:
+Before you start, make sure you have:
 
-- **AWS CLI** installed and configured
-- **AWS SAM CLI** installed
-- **Terraform** installed
+- AWS CLI installed and configured
+- AWS SAM CLI installed
+- Terraform installed
 - A **CircleCI project** connected to your GitHub repository
 - A **GitHub Personal Access Token** with permissions to create branches, commits, and pull requests
 
-That is the main setup barrier. After that, the flow is straightforward.
 
-### Setup flow
-
-**1. Deploy the serverless stack**
+### 1. Deploy the serverless stack
 
 ```bash
 cd server_less
@@ -163,9 +82,9 @@ sam build
 sam deploy
 ```
 
-This creates the request API, SNS, SQS, DLQ, Lambda, and IAM resources.
+This creates the API Gateway, SNS, SQS, DLQ, Lambda, and the required IAM resources.
 
-**2. Store your GitHub token in SSM**
+### 2. Store the GitHub token in SSM
 
 ```bash
 aws ssm put-parameter \
@@ -174,7 +93,7 @@ aws ssm put-parameter \
   --value "<your-github-token>"
 ```
 
-**3. Deploy the Terraform backend**
+### 3. Deploy the Terraform backend
 
 ```bash
 cd IaC_Code/backend
@@ -182,7 +101,7 @@ terraform init
 terraform apply
 ```
 
-**4. Deploy the CircleCI OIDC infrastructure**
+### 4. Deploy the CircleCI OIDC infrastructure
 
 ```bash
 cd IaC_Code/oidc_circleCI
@@ -190,9 +109,9 @@ cd IaC_Code/oidc_circleCI
 terraform apply
 ```
 
-**5. Configure CircleCI environment variables**
+### 5. Configure CircleCI
 
-Set the required variables in CircleCI, especially:
+Create a CircleCI project connected to the repository and define the required environment variables there,  in the config/.env.example file including:
 
 - `AWS_ROLE_ARN`
 - `AWS_REGION`
@@ -200,27 +119,22 @@ Set the required variables in CircleCI, especially:
 - `PROJECT_NAME`
 - `GITHUB_OWNER`
 - `GITHUB_REPO`
-- `GITHUB_BASE_BRANCH`
-- `GITHUB_TOKEN_PARAMETER_NAME`
-- `TERRAFORM_ROOT_PATH`
 
-**6. Send a provisioning request**
+### 6. Send a provisioning request
 
-Use the API Gateway URL from the SAM stack outputs and send:
+Use the API Gateway URL from the SAM stack outputs and send a POST request such as:
 
 ```json
 {
-  "database_name": "myappdb",
-  "database_engine": "mysql",
-  "environment": "dev"
+  "database_name": "ordersdb",
+  "database_engine": "postgresql",
+  "environment": "prod"
 }
 ```
 
-That request will generate a Terraform request file, open a GitHub PR, and trigger the provisioning workflow.
-
 ---
 
-## Example request
+## Example Request
 
 ```bash
 curl -X POST "https://<api-id>.execute-api.<region>.amazonaws.com/api/requests" \
@@ -234,49 +148,23 @@ curl -X POST "https://<api-id>.execute-api.<region>.amazonaws.com/api/requests" 
 
 ---
 
-## Security and operations notes
+## What This Project Demonstrates
 
-This project includes several practices that make it feel closer to a real platform workflow:
+The project shows:
 
-- **OIDC authentication** for CircleCI
-- **SSM Parameter Store** for GitHub token retrieval
-- **KMS encryption** for database-related resources
-- **Private subnet placement** for the Aurora cluster
-- **DLQ support** for failed queue processing
-- **Remote Terraform state** with locking
-- **Example configuration files** instead of committing real secrets
+- practical use of AWS serverless services
+- modular Infrastructure as Code with Terraform
+- remote backend and state locking
+- secure CI/CD access to AWS using OIDC
+- automation of infrastructure requests through GitHub Pull Requests
+- separation between development and production provisioning logic
 
----
-
-## What I would improve next
-
-If this project were continued further, strong next steps would be:
-
-- add approval / review gates before provisioning `prod`
-- validate request uniqueness and naming policy more strictly
-- add observability dashboards and alarms
-- add automated tests for the Lambda request processor
-- support request cancellation / lifecycle management
-- add a frontend portal for submitting database requests
+More broadly, the project reflects the way I like to build systems: with automation, structure, and a flow that is closer to real platform engineering work than to a simple isolated demo.
 
 ---
 
-## Who this project is for
+## About Me
 
-This project is a strong portfolio piece for roles such as:
+My name is **Nerya Reznikovich**, and I built this project as part of my learning journey in cloud, DevOps, and platform engineering.
 
-- Junior DevOps Engineer
-- Cloud Engineer
-- Platform Engineer
-- SRE / Production Engineering internships or junior roles
-- Backend / Infrastructure-oriented software roles
-
-It demonstrates cloud design, automation, CI/CD, IAM, Terraform structure, and practical AWS thinking in one coherent flow.
-
----
-
-## Author
-
-**Nerya Reznikovich**
-
-If you want, you can extend this README with screenshots, architecture diagrams, pipeline output examples, and a short demo GIF to make it even more recruiter-friendly.
+I enjoy building hands-on systems that combine infrastructure, automation, and software development, especially projects that simulate real operational workflows and not only basic service deployment demos.
